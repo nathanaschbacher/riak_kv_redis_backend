@@ -1,0 +1,13 @@
+{application, riak_kv_redis_backend, [
+  {description, "Redis storage backend for the Riak Distributed Database."},
+  {vsn, "0.1"},
+  {modules, [
+    riak_kv_redis_backend
+  ]},
+  {registered, []},
+  {applications, [
+    kernel,
+    stdlib
+  ]},
+  {env, []}
+]}.
