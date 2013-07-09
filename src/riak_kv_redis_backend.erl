@@ -94,7 +94,8 @@ start(Partition, Config) ->
                                         data_dir=DataDir,
                                         partition=Partition,
                                         root=DataRoot
-                                    }};
+                                    }},
+                                    Result;
                                 {error, Reason} -> {error, Reason}
                             end;
                         {error, Reason} -> {error, Reason}
