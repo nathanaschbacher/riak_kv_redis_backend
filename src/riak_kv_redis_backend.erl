@@ -29,6 +29,7 @@
 %% Riak Storage Backend API
 -export([api_version/0,
          capabilities/1,
+         capabilities/2,
          start/2,
          stop/1,
          get/3,
@@ -39,7 +40,8 @@
          fold_keys/4,
          fold_objects/4,
          is_empty/1,
-         status/1]).
+         status/1,
+         callback/3]).
 
 -define(API_VERSION, 1).
 -define(CAPABILITIES, []).
@@ -69,6 +71,11 @@ api_version() ->
 %% @doc Return the capabilities of the backend.
 -spec capabilities(state()) -> {ok, [atom()]}.
 capabilities(_) ->
+    {ok, ?CAPABILITIES}.
+
+%% @doc Return the capabilities of the backend.
+-spec capabilities(riak_object:bucket(), state()) -> {ok, [atom()]}.
+capabilities(_, _) ->
     {ok, ?CAPABILITIES}.
 
 %% @doc Start the redis backend
@@ -104,7 +111,7 @@ start(Partition, Config) ->
             end;
         {error, Reason} -> {error, {Reason, "Failed to create data directories for redis backend."}}
     end.
-    
+
 
 %% @doc Stop the backend
 -spec stop(state()) -> ok.
@@ -121,10 +128,10 @@ stop(#state{redis_context=Context}=State) ->
 get(Bucket, Key, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"GET">>, CombinedKey]) of
-        {ok, Value} ->
-            {ok, Value, State};
         {ok, undefined}  ->
             {error, not_found, State};
+        {ok, Value} ->
+            {ok, Value, State};
         {error, Reason} ->
             {error, Reason, State}
     end.
@@ -132,7 +139,7 @@ get(Bucket, Key, #state{redis_context=Context}=State) ->
 %% @doc Insert an object into the backend.
 -type index_spec() :: {add, Index, SecondaryKey} | {remove, Index, SecondaryKey}.
 -spec put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) -> {ok, state()} | {error, term(), state()}.
-put(Bucket, Key, IndexSpec, Value, #state{redis_context=Context}=State) ->
+put(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"SET">>, CombinedKey, Value]) of
         {ok, <<"OK">>} ->
@@ -143,7 +150,7 @@ put(Bucket, Key, IndexSpec, Value, #state{redis_context=Context}=State) ->
 
 %% @doc Delete an object from the backend
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) -> {ok, state()} | {error, term(), state()}.
-delete(Bucket, Key, IndexSpec, #state{redis_context=Context}=State) ->
+delete(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"DEL">>, CombinedKey]) of
         {ok, 1} ->
@@ -154,17 +161,17 @@ delete(Bucket, Key, IndexSpec, #state{redis_context=Context}=State) ->
 
 %% @doc Fold over all the buckets
 -spec fold_buckets(riak_kv_backend:fold_buckets_fun(), any(), [], state()) -> {ok, any()} | {async, fun()}.
-fold_buckets(Func, Any, Thing, #state{redis_context=Context}=State) ->
+fold_buckets(_Func, _Any, _Thing, #state{redis_context=_Context}=State) ->
     {ok, State}.
 
 %% @doc Fold over all the keys for one or all buckets.
 -spec fold_keys(riak_kv_backend:fold_keys_fun(), any(), [{atom(), term()}], state()) -> {ok, term()} | {async, fun()}.
-fold_keys(Func, Any, Thing, #state{redis_context=Context}=State) ->
+fold_keys(_Func, _Any, _Thing, #state{redis_context=_Context}=State) ->
     {ok, State}.
 
 %% @doc Fold over all the objects for one or all buckets.
 -spec fold_objects(riak_kv_backend:fold_objects_fun(), any(), [{atom(), term()}], state()) -> {ok, any()} | {async, fun()}.
-fold_objects(Func, Any, Thing, #state{redis_context=Context}=State) ->
+fold_objects(_Func, _Any, _Thing, #state{redis_context=_Context}=State) ->
     {ok, State}.
 
 %% @doc Delete all objects from this backend
@@ -199,6 +206,10 @@ status(#state{redis_context=Context}=State) ->
             {error, Reason, State}
     end.
 
+%% @doc Register an asynchronous callback
+-spec callback(reference(), any(), state()) -> {ok, state()}.
+callback(_Ref, _Msg, State) ->
+    {ok, State}.
 
 %% @private
 check_redis_install(DataDir, ConfigFilename) ->
@@ -218,11 +229,11 @@ check_redis_install(DataDir, ConfigFilename) ->
 copy_redis_executable(DataDir) ->
     ExpectedFile = filename:join([DataDir, "redis-server"]),
     case filelib:is_file(ExpectedFile) of
-        true -> 
+        true ->
             {ok, ExpectedFile};
         false ->
             case file:copy(filename:join([code:priv_dir(?MODULE), "redis", "redis-server"]), filename:join([DataDir,"redis-server"])) of
-                {ok, BytesCopied} ->
+                {ok, _BytesCopied} ->
                     {ok, ExpectedFile};
                 {error, Reason} ->
                     {error, Reason}
@@ -233,42 +244,40 @@ copy_redis_executable(DataDir) ->
 copy_redis_config(DataDir, ConfigFile) ->
     ExpectedFile = filename:join([DataDir, filename:basename(ConfigFile)]),
     case filelib:is_file(ExpectedFile) of
-        true -> 
+        true ->
             {ok, ExpectedFile};
         false ->
             case file:copy(ConfigFile, filename:join([DataDir,filename:basename(ConfigFile)])) of
-                {ok, BytesCopied} ->
+                {ok, _BytesCopied} ->
                     {ok, ExpectedFile};
                 {error, Reason} ->
                     {error, Reason}
             end
     end.
- 
+
 %% @private
 start_redis(Executable, ConfigFile) ->
     case file:change_mode(Executable, 8#00755) of
         ok ->
-            %% For some reason this isn't doing what I expect.  
+            %% For some reason this isn't doing what I expect.
             Port = erlang:open_port({spawn_executable, Executable}, [{args, [ConfigFile]}, {cd, filename:dirname(Executable)}, exit_status]),
             case erlang:port_info(Port) of
                 undefined ->
                     {error, {redis_error, "Could not start and/or link to Redis process as Erlang port."}};
-                Info ->
+                _Info ->
                     ExpectedSocketFile = filename:join([filename:dirname(Executable), "redis.sock"]),
-                    case filelib:is_file(ExpectedSocketFile) of
-                        true ->
+                    case filelib:last_modified(ExpectedSocketFile) of
+                        0 ->
+                            {error, {redis_error, "Redis socket file not found."}};
+                        _ ->
                             ExpectedPidFile = filename:join([filename:dirname(ExpectedSocketFile), "redis.pid"]),
                             case filelib:is_file(ExpectedPidFile) of
                                 true ->
                                     {ok, ExpectedSocketFile, ExpectedPidFile};
                                 false ->
                                     {error, {redis_error, "Redis pid file not found."}}
-                            end;
-                        false ->
-                            {error, {redis_error, "Redis socket file not found."}}
+                            end
                     end
             end;
         {error, Reason} -> {error, Reason}
     end.
-
-
