@@ -80,38 +80,55 @@ capabilities(_, _) ->
 
 %% @doc Start the redis backend
 -spec start(integer(), config()) -> {ok, state()} | {error, term()}.
-start(Partition, Config) ->
-    %% Get the data root directory
-    DataRoot = app_helper:get_prop_or_env(data_root, Config, hierdis),
-    ConfigFile = app_helper:get_prop_or_env(config_file, Config, hierdis),
-    DataDir = filename:join([DataRoot, integer_to_list(Partition)]),
-
-    case filelib:ensure_dir(filename:join([DataDir, dummy])) of
+start(Partition, _Config) ->
+    %% Start the hierdis application.
+    case start_hierdis() of
         ok ->
-            case check_redis_install(DataDir, ConfigFile) of
-                {ok, RedisExecutable, RedisConfig} ->
-                    case start_redis(RedisExecutable, RedisConfig) of
-                        {ok, RedisPidFile, RedisSocketFile} ->
-                            case hierdis:connect_unix(RedisSocketFile) of
-                                {ok, RedisContext} ->
-                                    Result = {ok, #state{
-                                        redis_context=RedisContext,
-                                        redis_socket_path=RedisSocketFile,
-                                        redis_unix_pid=RedisPidFile,
-                                        data_dir=DataDir,
-                                        partition=Partition,
-                                        root=DataRoot
-                                    }},
-                                    Result;
-                                {error, Reason} -> {error, Reason}
-                            end;
-                        {error, Reason} -> {error, Reason}
-                    end;
-                {error, Reason} -> {error, {Reason, "Unable to validate Redis install."}}
-            end;
-        {error, Reason} -> {error, {Reason, "Failed to create data directories for redis backend."}}
-    end.
+            %% Get the data root directory
+            DataRoot = filename:absname(app_helper:get_env(hierdis, data_root)),
+            ConfigFile = filename:absname(app_helper:get_env(hierdis, config_file)),
+            DataDir = filename:join([DataRoot, integer_to_list(Partition)]),
 
+            % 1) Check for redis install
+            %     a) if not, then copy files
+            % 2) Check for redis already_running
+            %     a) if not, then start redis
+            % 3) Attach to redis
+            case filelib:ensure_dir(filename:join([DataDir, dummy])) of
+                ok ->
+                    case check_redis_install(DataDir) of
+                        {ok, RedisExecutable} ->
+                            case check_redis_running(RedisExecutable, ConfigFile) of
+                               {ok, RedisPidFile, RedisSocketFile} ->
+                                    io:format("Attaching hierdis to: ~p\n", [RedisSocketFile]),
+                                    case hierdis:connect_unix(RedisSocketFile) of
+                                        {ok, RedisContext} ->
+                                            io:format("Got Context"),
+                                            Result = {ok, #state{
+                                                redis_context=RedisContext,
+                                                redis_socket_path=RedisSocketFile,
+                                                redis_unix_pid=RedisPidFile,
+                                                data_dir=DataDir,
+                                                partition=Partition,
+                                                root=DataRoot
+                                            }},
+                                            io:format("Result: ~p\n", [Result]),
+                                            Result;
+                                        {error, Reason} -> 
+                                            {error, Reason}
+                                    end;
+                                {error, Reason} -> 
+                                    {error, Reason} 
+                            end;
+                        {error, Reason} -> 
+                            {error, Reason}
+                    end;
+                {error, Reason} -> 
+                    {error, {Reason, "Failed to create data directories for redis backend."}}
+            end;
+        {error, Reason} -> 
+            {error, Reason}
+    end.
 
 %% @doc Stop the backend
 -spec stop(state()) -> ok.
@@ -212,21 +229,67 @@ callback(_Ref, _Msg, State) ->
     {ok, State}.
 
 %% @private
-check_redis_install(DataDir, ConfigFilename) ->
-    case copy_redis_executable(DataDir) of
-        {ok, Executable} ->
-            case copy_redis_config(DataDir, ConfigFilename) of
-                {ok, ConfigFile} ->
-                    {ok, Executable, ConfigFile};
-                {error, Reason} ->
-                    {error, {Reason, "Failed to copy Redis configuration file."}}
-            end;
+start_hierdis() ->
+    io:format("start_hierdis()\n"),
+    case application:start(hierdis) of
+        ok ->
+            ok;
+        {error, {already_started, hierdis}} ->
+            ok;
         {error, Reason} ->
-            {error, {Reason, "Failed to copy Redis executable."}}
+            {error, Reason}
+    end.
+
+%% @private
+file_exists(Filepath) ->
+    io:format("file_exists(~p)\n", [Filepath]),
+    case filelib:last_modified(filename:absname(Filepath)) of
+        0 ->
+            false;
+        _ ->
+            true
+    end.
+
+%% @private
+check_redis_install(DataDir) ->
+    io:format("check_redis_install(~p)\n", [DataDir]),
+    RedisExecutable = filename:join([DataDir, "redis-server"]),
+    case file_exists(RedisExecutable) of
+        true ->
+            {ok, RedisExecutable};
+        false ->
+            case copy_redis_executable(DataDir) of
+                {ok, Executable} ->
+                    {ok, Executable};
+                {error, Reason} ->
+                    {error, {Reason, "Failed to copy Redis executable."}}
+            end
+    end.
+
+check_redis_running(RedisExecutable, ConfigFile) ->
+    io:format("check_redis_running(~p, ~p)\n", [RedisExecutable, ConfigFile]),
+    PidFile = filename:join([filename:dirname(RedisExecutable), "redis.pid"]),
+    SocketFile = filename:join([filename:dirname(RedisExecutable), "redis.sock"]),
+    case file_exists(PidFile) of
+        true ->
+            case file_exists(SocketFile) of
+                true ->
+                    {ok, PidFile, SocketFile};
+                false ->
+                    {error, {already_running, io:format("Found pid file at: ~p , but no socket file found at: ~p\n", [PidFile, SocketFile])}}
+            end;
+        false ->
+            case start_redis(RedisExecutable, ConfigFile) of
+                {ok, NewPidFile, NewSocketFile} ->
+                    {ok, NewPidFile, NewSocketFile};
+                {error, Reason} ->
+                    {error, Reason}
+            end   
     end.
 
 %% @private
 copy_redis_executable(DataDir) ->
+    io:format("copy_redis_executable(~p)\n", [DataDir]),
     ExpectedFile = filename:join([DataDir, "redis-server"]),
     case filelib:is_file(ExpectedFile) of
         true ->
@@ -241,43 +304,22 @@ copy_redis_executable(DataDir) ->
     end.
 
 %% @private
-copy_redis_config(DataDir, ConfigFile) ->
-    ExpectedFile = filename:join([DataDir, filename:basename(ConfigFile)]),
-    case filelib:is_file(ExpectedFile) of
-        true ->
-            {ok, ExpectedFile};
-        false ->
-            case file:copy(ConfigFile, filename:join([DataDir,filename:basename(ConfigFile)])) of
-                {ok, _BytesCopied} ->
-                    {ok, ExpectedFile};
-                {error, Reason} ->
-                    {error, Reason}
-            end
-    end.
-
-%% @private
 start_redis(Executable, ConfigFile) ->
+    io:format("start_redis(~p, ~p)\n", [Executable, ConfigFile]),
     case file:change_mode(Executable, 8#00755) of
         ok ->
-            %% For some reason this isn't doing what I expect.
-            Port = erlang:open_port({spawn_executable, Executable}, [{args, [ConfigFile]}, {cd, filename:dirname(Executable)}, exit_status]),
+            Port = erlang:open_port({spawn_executable, [Executable]}, [{args, [ConfigFile]}, {cd, filename:dirname(Executable)}]),
             case erlang:port_info(Port) of
                 undefined ->
                     {error, {redis_error, "Could not start and/or link to Redis process as Erlang port."}};
                 _Info ->
+                    io:format("Port: ~p\n", [_Info]),
+                    %check_redis_running(Executable, ConfigFile)
                     ExpectedSocketFile = filename:join([filename:dirname(Executable), "redis.sock"]),
-                    case filelib:last_modified(ExpectedSocketFile) of
-                        0 ->
-                            {error, {redis_error, "Redis socket file not found."}};
-                        _ ->
-                            ExpectedPidFile = filename:join([filename:dirname(ExpectedSocketFile), "redis.pid"]),
-                            case filelib:is_file(ExpectedPidFile) of
-                                true ->
-                                    {ok, ExpectedSocketFile, ExpectedPidFile};
-                                false ->
-                                    {error, {redis_error, "Redis pid file not found."}}
-                            end
-                    end
+                    ExpectedPidFile = filename:join([filename:dirname(ExpectedSocketFile), "redis.pid"]),
+                    {ok, ExpectedPidFile, ExpectedSocketFile}
             end;
-        {error, Reason} -> {error, Reason}
+        {error, Reason} -> 
+            {error, Reason}
     end.
+
