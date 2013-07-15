@@ -1,6 +1,6 @@
 ## Overview
 
-High-performance Redis storage backend for the Riak Distributed Database. 
+High-performance Redis storage backend for the Riak Distributed Database.
 
 
 ## Installation
@@ -13,12 +13,37 @@ High-performance Redis storage backend for the Riak Distributed Database.
 	
 This should automatically build the `redis` dependencies and move the redis-server binary and redis.conf file the `priv/` directory.
 
+Then you need to copy the `riak_kv_redis_backend` to the `lib` directory of your Riak install.
+
+    $ cd ..
+    $ cp -R ./riak_kv_redis_backend /path/to/riak/lib
+    
+Then create a symlink in the `lib` directory that points to the built `hierdis` dependency nested inside the `riak_kv_redis_backend` project.
+
+    $ cd /path/to/riak/lib
+    $ ln -s ./riak_kv_redis_backend/deps/hierdis ./hierdis
+
 ## Usage
 
-    $ erl -pa ebin/
-    
-    Eshell V5.9.1  (abort with ^G)
-    1> 
+Edit app.config to set your storage backend to use `riak_kv_redis_backend`
+
+```
+%% Riak KV config
+{riak_kv, [
+            {storage_backend, riak_kv_redis_backend},
+            ...
+          ]},
+```
+
+And add a stanza for configuring `hierdis`
+
+```
+%% hierdis Config
+ {hierdis, [
+          {data_root, "./data/hierdis"},
+          {config_file, "/path/to/riak/lib/riak_kv_redis_backend/priv/riak_kv_redis_backend.redis.config"}
+         ]},
+```
     
 
 ## License
