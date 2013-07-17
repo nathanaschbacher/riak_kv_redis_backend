@@ -162,7 +162,7 @@ get(Bucket, Key, #state{redis_context=Context}=State) ->
 put(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"SET">>, CombinedKey, Value]) of
-        {ok, Value} ->
+        {ok, _Response} ->
             {ok, State};
         {error, Reason} ->
             {error, Reason, State}
@@ -173,7 +173,7 @@ put(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
 delete(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"DEL">>, CombinedKey]) of
-        {ok, 1} ->
+        {ok, _Response} ->
             {ok, State};
         {error, Reason} ->
             {error, Reason, State}
