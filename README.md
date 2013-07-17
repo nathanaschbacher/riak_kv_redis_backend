@@ -38,10 +38,19 @@ Edit app.config to set your storage backend to use `riak_kv_redis_backend`
 And add a stanza for configuring `hierdis`
 
 ```
-%% hierdis Config
+ %% hierdis Config
  {hierdis, [
           {data_root, "./data/hierdis"},
-          {config_file, "/path/to/riak/lib/riak_kv_redis_backend/priv/riak_kv_redis_backend.redis.config"}
+
+          {executable, "./lib/riak_kv_redis_backend/priv/redis/redis-server"},
+          {config_file, "./lib/riak_kv_redis_backend/priv/riak_kv_redis_backend.redis.config"},
+          
+          %% The partition id will be appended to the end.  The total path including partition id must be less than 108 bytes.
+          {unixsocket, "/tmp/redis.sock."} 
+         
+          %% Tell the backend whether or not it should keep Redis running between Riak restarts.
+          %% default is `false`.
+          %% {leave_running, true}
          ]},
 ```
     
