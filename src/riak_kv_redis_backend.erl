@@ -81,7 +81,6 @@ capabilities(_, _) ->
 %% @doc Start the redis backend
 -spec start(integer(), config()) -> {ok, state()} | {error, term()}.
 start(Partition, _Config) ->
-    io:format("Starting redis backend for: ~p\n", [Partition]),
     %% Start the hierdis application.
     case start_hierdis_application() of
         ok ->
@@ -110,10 +109,9 @@ start(Partition, _Config) ->
                                                 partition=Partition,
                                                 root=DataRoot
                                             }},
-                                            io:format("Result:\n\t~p\n", [Result]),
+                                            io:format("Started redis backend for partition: ~p\n", [Partition]),
                                             Result;                                    
                                         {error, Reason} ->
-                                            io:format("HierdisError: ~p\n", [Reason]),
                                             {error, Reason}
                                     end;
                                 {error, Reason} ->
@@ -123,7 +121,6 @@ start(Partition, _Config) ->
                             {error, Reason}
                     end;
                 {error, Reason} -> 
-                    io:format("ensure_dir Error: ~p\n", [Reason]),
                     {error, {Reason, "Failed to create data directories for redis backend."}}
             end;
         {error, Reason} ->
@@ -165,8 +162,8 @@ get(Bucket, Key, #state{redis_context=Context}=State) ->
 put(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"SET">>, CombinedKey, Value]) of
-        {ok, <<"OK">>} ->
-            {ok, Value};
+        {ok, Value} ->
+            {ok, State};
         {error, Reason} ->
             {error, Reason, State}
     end.
@@ -221,14 +218,8 @@ is_empty(#state{redis_context=Context}=State) ->
 
 %% @doc Get the status information for this backend
 -spec status(state()) -> [{atom(), term()}].
-status(#state{redis_context=Context}=State) ->
+status(State) ->
     [{state, State}].
-    % case hierdis:command(Context, [<<"INFO">>, <<"all">>]) of
-    %     {ok, Info} ->
-    %         [{redis_info, Info}];
-    %     {error, Reason} ->
-    %         [{error, State}, {info, Reason}]
-    % end.
 
 %% @doc Register an asynchronous callback
 -spec callback(reference(), any(), state()) -> {ok, state()}.
