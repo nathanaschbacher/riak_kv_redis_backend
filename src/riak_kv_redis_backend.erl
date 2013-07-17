@@ -47,7 +47,6 @@
 -define(CAPABILITIES, []).
 
 -record(state, {redis_context :: term(),
-                redis_pidfile :: string(),
                 redis_socket_path :: string(),
                 data_dir :: string(),
                 partition :: integer(),
@@ -91,19 +90,17 @@ start(Partition, _Config) ->
 
             ExpectedExecutable = filename:absname(app_helper:get_env(hierdis, executable)),
             ExpectedSocketFile = lists:flatten([app_helper:get_env(hierdis, unixsocket), integer_to_list(Partition)]),
-            ExpectedPidFile = filename:absname(filename:join([DataDir, "redis.pid."++integer_to_list(Partition)])),
 
             case filelib:ensure_dir(filename:join([DataDir, dummy])) of
                 ok ->
                     case check_redis_install(ExpectedExecutable) of
                         {ok, RedisExecutable} ->
-                            case start_redis(RedisExecutable, ConfigFile, ExpectedSocketFile, ExpectedPidFile) of
+                            case start_redis(RedisExecutable, ConfigFile, ExpectedSocketFile, DataDir) of
                                 {ok, RedisSocket} ->
                                     case hierdis:connect_unix(RedisSocket) of
                                         {ok, RedisContext} ->
                                             Result = {ok, #state{
                                                 redis_context=RedisContext,
-                                                redis_pidfile=ExpectedPidFile,
                                                 redis_socket_path=RedisSocket,
                                                 data_dir=DataDir,
                                                 partition=Partition,
@@ -198,7 +195,7 @@ fold_objects(_Func, _Any, _Thing, #state{redis_context=_Context}=State) ->
 -spec drop(state()) -> {ok, state()} | {error, term(), state()}.
 drop(#state{redis_context=Context}=State) ->
     case hierdis:command(Context, [<<"FLUSHDB">>]) of
-        {ok, <<"OK">>} ->
+        {ok, _Response} ->
             {ok, State};
         {error, Reason} ->
             {error, Reason, State}
@@ -256,20 +253,20 @@ check_redis_install(Executable) ->
     end.
 
 %% @private
-start_redis(Executable, ConfigFile, SocketFile, PidFile) ->
+start_redis(Executable, ConfigFile, SocketFile, DataDir) ->
     case file:change_mode(Executable, 8#00755) of
         ok ->
             case file_exists(SocketFile) of
                 true ->
                     {ok, SocketFile};
                 false ->
-                    Args = [ConfigFile, "--unixsocket", SocketFile, "--pidfile", PidFile],
-                    Port = erlang:open_port({spawn_executable, [Executable]}, [{args, Args}, {cd, filename:dirname(PidFile)}]),
-                    case erlang:port_info(Port) of
-                        undefined ->
-                            {error, {redis_error, io:format("Could not start Redis via Erlang port: ~p\n", [Executable])}};
-                        _Info ->
-                            wait_for_file(SocketFile, 100, 5)
+                    Args = [ConfigFile, "--unixsocket", SocketFile, "--daemonize", "yes"],
+                    Port = erlang:open_port({spawn_executable, [Executable]}, [{args, Args}, {cd, filename:absname(DataDir)}]),
+                    receive
+                        {'EXIT', Port, normal} ->
+                            wait_for_file(SocketFile, 100, 5);
+                        {'EXIT', Port, Reason} ->
+                            {error, {redis_error, Port, Reason, io:format("Could not start Redis via Erlang port: ~p\n", [Executable])}}
                     end
             end;
         {error, Reason} -> 
@@ -278,11 +275,11 @@ start_redis(Executable, ConfigFile, SocketFile, PidFile) ->
 
 %% @private
 wait_for_file(File, Msec, Attempts) when Attempts > 0 ->
-    timer:sleep(Msec),
     case file_exists(File) of
         true->
             {ok, File};
         false ->
+            timer:sleep(Msec),
             wait_for_file(File, Msec, Attempts-1)
     end;
 wait_for_file(File, _Msec, Attempts) when Attempts =< 0 ->
