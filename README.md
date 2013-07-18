@@ -46,11 +46,22 @@ And add a stanza for configuring `hierdis`
           {config_file, "./lib/riak_kv_redis_backend/priv/riak_kv_redis_backend.redis.config"},
           
           %% The partition id will be appended to the end.  The total path including partition id must be less than 108 bytes.
-          {unixsocket, "/tmp/redis.sock."} 
+          {unixsocket, "/tmp/redis.sock."}, 
          
           %% Tell the backend whether or not it should keep Redis running between Riak restarts.
-          %% default is `false`.
-          %% {leave_running, true}
+          %% Default is `false`.
+          {leave_running, false},
+
+          %% Set the scheme with which data will be stored in Redis.
+          %%    `kv`    Combines the `Bucket` and `Key` into <<"Bucket,Key">> and does GET/PUT/DELETE in Redis as
+          %%            direct key/value GET/SET/DEL operations.
+          %%
+          %%    `hash`  Utilizes Redis' internal hash data structures.  
+          %%            `Bucket` becomes the name of the hash, `Key` is the key, and uses HGET/HSET/HDEL operations.
+          %%            This scheme can produce some improvements in performance and memory utilization, but comes at
+          %%            the expense of a ~4 Billion key per bucket per vnode limit.
+          %% Default is `kv`.
+          {storage_scheme, kv}
          ]},
 ```
     

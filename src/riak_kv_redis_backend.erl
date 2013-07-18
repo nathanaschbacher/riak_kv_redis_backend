@@ -48,6 +48,9 @@
 
 -record(state, {redis_context :: term(),
                 redis_socket_path :: string(),
+                get_fun :: fun(),
+                put_fun :: fun(),
+                del_fun :: fun(),
                 data_dir :: string(),
                 partition :: integer(),
                 root :: string()}).
@@ -91,6 +94,17 @@ start(Partition, _Config) ->
             ExpectedExecutable = filename:absname(app_helper:get_env(hierdis, executable)),
             ExpectedSocketFile = lists:flatten([app_helper:get_env(hierdis, unixsocket), integer_to_list(Partition)]),
 
+            case app_helper:get_env(hierdis, storage_scheme) of
+                hash ->
+                    Get = fun get_as_hget/3,
+                    Put = fun put_as_hset/5,
+                    Del = fun delete_as_hdel/4;
+                _ ->
+                    Get = fun get_as_get/3,
+                    Put = fun put_as_set/5,
+                    Del = fun delete_as_del/4
+            end,
+
             case filelib:ensure_dir(filename:join([DataDir, dummy])) of
                 ok ->
                     case check_redis_install(ExpectedExecutable) of
@@ -102,6 +116,9 @@ start(Partition, _Config) ->
                                             Result = {ok, #state{
                                                 redis_context=RedisContext,
                                                 redis_socket_path=RedisSocket,
+                                                get_fun=Get,
+                                                put_fun=Put,
+                                                del_fun=Del,
                                                 data_dir=DataDir,
                                                 partition=Partition,
                                                 root=DataRoot
@@ -142,7 +159,22 @@ stop(#state{redis_context=Context}=State) ->
 
 %% @doc Retrieve an object from the backend
 -spec get(riak_object:bucket(), riak_object:key(), state()) -> {ok, any(), state()} | {ok, not_found, state()} | {error, term(), state()}.
-get(Bucket, Key, #state{redis_context=Context}=State) ->
+get(Bucket, Key, #state{get_fun=Get}=State) ->
+    Get(Bucket, Key, State).
+
+%% @private
+get_as_hget(Bucket, Key, #state{redis_context=Context}=State) ->
+    case hierdis:command(Context, [<<"HGET">>, Bucket, Key]) of
+        {ok, undefined}  ->
+            {error, not_found, State};
+        {ok, Value} ->
+            {ok, Value, State};
+        {error, Reason} ->
+            {error, Reason, State}
+    end.
+
+%% @private
+get_as_get(Bucket, Key, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"GET">>, CombinedKey]) of
         {ok, undefined}  ->
@@ -156,7 +188,20 @@ get(Bucket, Key, #state{redis_context=Context}=State) ->
 %% @doc Insert an object into the backend.
 -type index_spec() :: {add, Index, SecondaryKey} | {remove, Index, SecondaryKey}.
 -spec put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) -> {ok, state()} | {error, term(), state()}.
-put(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
+put(Bucket, Key, _IndexSpec, Value, #state{put_fun=Put}=State) ->
+    Put(Bucket, Key, _IndexSpec, Value, State).
+
+%% @private
+put_as_hset(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
+    case hierdis:command(Context, [<<"HSET">>, Bucket, Key, Value]) of
+        {ok, _Response} ->
+            {ok, State};
+        {error, Reason} ->
+            {error, Reason, State}
+    end.
+
+%% @private
+put_as_set(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"SET">>, CombinedKey, Value]) of
         {ok, _Response} ->
@@ -167,7 +212,20 @@ put(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
 
 %% @doc Delete an object from the backend
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) -> {ok, state()} | {error, term(), state()}.
-delete(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
+delete(Bucket, Key, _IndexSpec, #state{del_fun=Del}=State) ->
+    Del(Bucket, Key, _IndexSpec, State).
+
+%% @private
+delete_as_hdel(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
+    case hierdis:command(Context, [<<"HDEL">>, Bucket, Key]) of
+        {ok, _Response} ->
+            {ok, State};
+        {error, Reason} ->
+            {error, Reason, State}
+    end.
+
+%% @private
+delete_as_del(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"DEL">>, CombinedKey]) of
         {ok, _Response} ->
@@ -178,17 +236,17 @@ delete(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
 
 %% @doc Fold over all the buckets
 -spec fold_buckets(riak_kv_backend:fold_buckets_fun(), any(), [], state()) -> {ok, any()} | {async, fun()}.
-fold_buckets(_Func, _Any, _Thing, #state{redis_context=_Context}=State) ->
+fold_buckets(_Func, _Acc, _Opts, #state{redis_context=_Context}=State) ->
     {ok, State}.
 
 %% @doc Fold over all the keys for one or all buckets.
 -spec fold_keys(riak_kv_backend:fold_keys_fun(), any(), [{atom(), term()}], state()) -> {ok, term()} | {async, fun()}.
-fold_keys(_Func, _Any, _Thing, #state{redis_context=_Context}=State) ->
+fold_keys(_Func, _Acc, _Opts, #state{redis_context=_Context}=State) ->
     {ok, State}.
 
 %% @doc Fold over all the objects for one or all buckets.
 -spec fold_objects(riak_kv_backend:fold_objects_fun(), any(), [{atom(), term()}], state()) -> {ok, any()} | {async, fun()}.
-fold_objects(_Func, _Any, _Thing, #state{redis_context=_Context}=State) ->
+fold_objects(_Func, _Acc, _Opts, #state{redis_context=_Context}=State) ->
     {ok, State}.
 
 %% @doc Delete all objects from this backend
