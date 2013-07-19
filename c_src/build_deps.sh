@@ -24,7 +24,7 @@ case "$1" in
 	#clone redis to ./c_src/redis from git@github.com:antirez/redis.git
 	cd c_src
 
-        [ -d redis ] || git clone git@github.com:antirez/redis.git
+        [ -d redis ] || git clone https://github.com/antirez/redis.git
         cd redis
         git checkout $REDIS_VSN
 
