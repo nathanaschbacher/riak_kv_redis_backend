@@ -7,7 +7,7 @@ High-performance Redis storage backend for the Riak Distributed Database.
 
 **Pre-requisites:** You must build this using the same version of Erlang that was used to build Riak, or build it with the version of Erlang that is bundled with Riak.
 
-	$ git clone git@github.com:nathanaschbacher/riak_kv_redis_backend.git .
+	$ git clone git@github.com:nathanaschbacher/riak_kv_redis_backend.git
 	$ cd riak_kv_redis_backend
 	$ ./rebar get-deps compile
 	
