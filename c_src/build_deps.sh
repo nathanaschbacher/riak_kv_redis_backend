@@ -33,14 +33,13 @@ case "$1" in
 
     *)
         #build redis and install redis-server and redis.conf to ./priv/redis
-	export CFLAGS="$CFLAGS -arch x86_64 -m64"
-	cd $ROOT/c_src/redis && make
+		cd $ROOT/c_src/redis && make
 
-	rm -rf $ROOT/priv/redis
-	mkdir -p $ROOT/priv/redis
-	cp "$ROOT/c_src/redis/src/redis-server" $ROOT/priv/redis/redis-server
-	#cp $ROOT/c_src/redis/redis.conf $ROOT/priv/redis/redis.conf
+		rm -rf $ROOT/priv/redis
+		mkdir -p $ROOT/priv/redis
+		cp "$ROOT/c_src/redis/src/redis-server" $ROOT/priv/redis/redis-server
+		#cp $ROOT/c_src/redis/redis.conf $ROOT/priv/redis/redis.conf
 
-	cd $ROOT
+		cd $ROOT
         ;;
 esac
