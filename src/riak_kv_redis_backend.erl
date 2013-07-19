@@ -44,7 +44,7 @@
          callback/3]).
 
 -define(API_VERSION, 1).
--define(CAPABILITIES, []).
+-define(CAPABILITIES, [async_fold]).
 
 -record(state, {redis_context :: term(),
                 redis_socket_path :: string(),
@@ -236,18 +236,116 @@ delete_as_del(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
 
 %% @doc Fold over all the buckets
 -spec fold_buckets(riak_kv_backend:fold_buckets_fun(), any(), [], state()) -> {ok, any()} | {async, fun()}.
-fold_buckets(_Func, _Acc, _Opts, #state{redis_context=_Context}=State) ->
-    {ok, State}.
+fold_buckets(FoldBucketsFun, Acc, Opts, #state{redis_context=Context}=State) ->
+    FoldFun = fold_buckets_fun(FoldBucketsFun),
+    BucketFolder =
+        fun() ->
+            case hierdis:command(Context, [<<"KEYS">>, <<"*">>]) of
+                {ok, _Response} ->
+                    {BucketList, _} = lists:foldl(FoldFun, {Acc, sets:new()}, _Response),
+                    io:format("BUCKETS: ~p\n", [BucketList]),
+                    BucketList;
+                {error, Reason} -> 
+                    io:format("ERROR: ~p\n", [Reason]),
+                    {error, Reason, State}
+            end
+        end,
+    case lists:member(async_fold, Opts) of
+        true ->
+            {async, BucketFolder};
+        false ->
+            {ok, BucketFolder()}
+    end.
+
+%% @private
+fold_buckets_fun(FoldBucketsFun) ->
+    fun(CombinedKey, {Acc, BucketSet}) ->
+            [Bucket, _Key] = binary:split(CombinedKey, <<",">>),
+            case sets:is_element(Bucket, BucketSet) of
+                true ->
+                    {Acc, BucketSet};
+                false ->
+                    {FoldBucketsFun(Bucket, Acc),
+                     sets:add_element(Bucket, BucketSet)}
+            end
+    end.
 
 %% @doc Fold over all the keys for one or all buckets.
 -spec fold_keys(riak_kv_backend:fold_keys_fun(), any(), [{atom(), term()}], state()) -> {ok, term()} | {async, fun()}.
-fold_keys(_Func, _Acc, _Opts, #state{redis_context=_Context}=State) ->
-    {ok, State}.
+fold_keys(FoldKeysFun, Acc, Opts, #state{redis_context=Context}=State) ->
+    Bucket =  proplists:get_value(bucket, Opts),
+    FoldFun = fold_keys_fun(FoldKeysFun, Bucket),
+    KeyFolder =
+        fun() ->
+            case hierdis:command(Context, [<<"KEYS">>, [Bucket,",*"]]) of
+                {ok, _Response} ->
+                    KeyList = lists:foldl(FoldFun, Acc, _Response),
+                    KeyList;
+                {error, Reason} -> 
+                    {error, Reason, State}
+            end
+        end,
+    case lists:member(async_fold, Opts) of
+        true ->
+            {async, KeyFolder};
+        false ->
+            {ok, KeyFolder()}
+    end.
+
+%% @private
+fold_keys_fun(FoldKeysFun, undefined) ->
+    fun(CombinedKey, Acc) ->
+        [B, Key] = binary:split(CombinedKey, <<",">>),
+        FoldKeysFun(B, Key, Acc)
+    end;
+fold_keys_fun(FoldKeysFun, Bucket) ->
+    fun(CombinedKey, Acc) ->
+        [B, Key] = binary:split(CombinedKey, <<",">>),
+        case B =:= Bucket of
+            true ->
+                FoldKeysFun(Bucket, Key, Acc);
+            false ->
+                Acc
+        end
+    end.
 
 %% @doc Fold over all the objects for one or all buckets.
 -spec fold_objects(riak_kv_backend:fold_objects_fun(), any(), [{atom(), term()}], state()) -> {ok, any()} | {async, fun()}.
-fold_objects(_Func, _Acc, _Opts, #state{redis_context=_Context}=State) ->
+fold_objects(FoldObjectsFun, Acc, Opts, #state{redis_context=Context}=State) ->
     {ok, State}.
+    % Bucket =  proplists:get_value(bucket, Opts),
+    % FoldFun = fold_objects_fun(FoldObjectsFun, Bucket),
+    % ObjectFolder =
+    %     fun() ->
+    %         case hierdis:command(Context, [<<"KEYS">>, [Bucket,",*"]]) of
+    %             {ok, _Response} ->
+    %                 case hierdis:command(Context, [<<"MGET">>, _Response]) of
+    %                     {ok, _Response2} ->
+    %                         ObjectList = lists:foldl(FoldFun, Acc, _Response2),
+    %                         ObjectList;
+    %                     {error, Reason} -> 
+    %                         {error, Reason, State}
+    %                 end;
+    %             {error, Reason} -> 
+    %                 {error, Reason, State}
+    %         end
+    %     end,
+    % case lists:member(async_fold, Opts) of
+    %     true ->
+    %         {async, ObjectFolder};
+    %     false ->
+    %         {ok, ObjectFolder()}
+    % end.
+
+%% @private
+% fold_objects_fun(FoldObjectsFun, undefined) ->
+%     fun(Bucket, Key, Value, Acc) ->
+%         FoldObjectsFun(undefined, undefined, Value, Acc)
+%     end;
+% fold_objects_fun(FoldObjectsFun, Bucket) ->
+%     fun(Bucket, Key, Value, Acc) ->
+%         FoldObjectsFun(Bucket, Key, Value, Acc)
+%     end.
 
 %% @doc Delete all objects from this backend
 -spec drop(state()) -> {ok, state()} | {error, term(), state()}.
