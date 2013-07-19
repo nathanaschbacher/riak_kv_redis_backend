@@ -5,7 +5,7 @@ High-performance Redis storage backend for the Riak Distributed Database.
 
 ## Installation
 
-**Pre-requisites:** You must already have Erlang R14B04 or later installed on your machine.
+**Pre-requisites:** You must build this using the same version of Erlang that was used to build Riak.
 
 	$ git clone git@github.com:nathanaschbacher/riak_kv_redis_backend.git .
 	$ cd riak_kv_redis_backend
