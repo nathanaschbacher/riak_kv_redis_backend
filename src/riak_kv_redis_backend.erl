@@ -48,9 +48,7 @@
 
 -record(state, {redis_context :: term(),
                 redis_socket_path :: string(),
-                get_fun :: fun(),
-                put_fun :: fun(),
-                del_fun :: fun(),
+                storage_scheme :: atom(),
                 data_dir :: string(),
                 partition :: integer(),
                 root :: string()}).
@@ -95,14 +93,8 @@ start(Partition, _Config) ->
             ExpectedSocketFile = lists:flatten([app_helper:get_env(hierdis, unixsocket), integer_to_list(Partition)]),
 
             case app_helper:get_env(hierdis, storage_scheme) of
-                hash ->
-                    Get = fun get_as_hget/3,
-                    Put = fun put_as_hset/5,
-                    Del = fun delete_as_hdel/4;
-                _ ->
-                    Get = fun get_as_get/3,
-                    Put = fun put_as_set/5,
-                    Del = fun delete_as_del/4
+                hash -> Scheme = hash;
+                _ -> Scheme = kv
             end,
 
             case filelib:ensure_dir(filename:join([DataDir, dummy])) of
@@ -116,29 +108,22 @@ start(Partition, _Config) ->
                                             Result = {ok, #state{
                                                 redis_context=RedisContext,
                                                 redis_socket_path=RedisSocket,
-                                                get_fun=Get,
-                                                put_fun=Put,
-                                                del_fun=Del,
+                                                storage_scheme=Scheme,
                                                 data_dir=DataDir,
                                                 partition=Partition,
                                                 root=DataRoot
                                             }},
                                             io:format("Started redis backend for partition: ~p\n", [Partition]),
                                             Result;                                    
-                                        {error, Reason} ->
-                                            {error, Reason}
+                                        {error, Reason} -> {error, Reason}
                                     end;
-                                {error, Reason} ->
-                                    {error, Reason}
+                                {error, Reason} -> {error, Reason}
                             end;
-                        {error, Reason} ->
-                            {error, Reason}
+                        {error, Reason} -> {error, Reason}
                     end;
-                {error, Reason} -> 
-                    {error, {Reason, "Failed to create data directories for redis backend."}}
+                {error, Reason} -> {error, {Reason, "Failed to create data directories for redis backend."}}
             end;
-        {error, Reason} ->
-            {error, Reason}
+        {error, Reason} -> {error, Reason}
     end.
 
 %% @doc Stop the backend
@@ -159,11 +144,11 @@ stop(#state{redis_context=Context}=State) ->
 
 %% @doc Retrieve an object from the backend
 -spec get(riak_object:bucket(), riak_object:key(), state()) -> {ok, any(), state()} | {ok, not_found, state()} | {error, term(), state()}.
-get(Bucket, Key, #state{get_fun=Get}=State) ->
-    Get(Bucket, Key, State).
+get(Bucket, Key, #state{storage_scheme=Scheme}=State) ->
+    get(Scheme, Bucket, Key, State).
 
 %% @private
-get_as_hget(Bucket, Key, #state{redis_context=Context}=State) ->
+get(hash, Bucket, Key, #state{redis_context=Context}=State) ->
     case hierdis:command(Context, [<<"HGET">>, Bucket, Key]) of
         {ok, undefined}  ->
             {error, not_found, State};
@@ -171,10 +156,8 @@ get_as_hget(Bucket, Key, #state{redis_context=Context}=State) ->
             {ok, Value, State};
         {error, Reason} ->
             {error, Reason, State}
-    end.
-
-%% @private
-get_as_get(Bucket, Key, #state{redis_context=Context}=State) ->
+    end;
+get(kv, Bucket, Key, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"GET">>, CombinedKey]) of
         {ok, undefined}  ->
@@ -188,20 +171,18 @@ get_as_get(Bucket, Key, #state{redis_context=Context}=State) ->
 %% @doc Insert an object into the backend.
 -type index_spec() :: {add, Index, SecondaryKey} | {remove, Index, SecondaryKey}.
 -spec put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) -> {ok, state()} | {error, term(), state()}.
-put(Bucket, Key, _IndexSpec, Value, #state{put_fun=Put}=State) ->
-    Put(Bucket, Key, _IndexSpec, Value, State).
+put(Bucket, Key, _IndexSpec, Value, #state{storage_scheme=Scheme}=State) ->
+    put(Scheme, Bucket, Key, _IndexSpec, Value, State).
 
 %% @private
-put_as_hset(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
+put(hash, Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
     case hierdis:command(Context, [<<"HSET">>, Bucket, Key, Value]) of
         {ok, _Response} ->
             {ok, State};
         {error, Reason} ->
             {error, Reason, State}
-    end.
-
-%% @private
-put_as_set(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
+    end;
+put(kv, Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"SET">>, CombinedKey, Value]) of
         {ok, _Response} ->
@@ -212,20 +193,18 @@ put_as_set(Bucket, Key, _IndexSpec, Value, #state{redis_context=Context}=State) 
 
 %% @doc Delete an object from the backend
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) -> {ok, state()} | {error, term(), state()}.
-delete(Bucket, Key, _IndexSpec, #state{del_fun=Del}=State) ->
-    Del(Bucket, Key, _IndexSpec, State).
+delete(Bucket, Key, _IndexSpec, #state{storage_scheme=Scheme}=State) ->
+    delete(Scheme, Bucket, Key, _IndexSpec, State).
 
 %% @private
-delete_as_hdel(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
+delete(hash, Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
     case hierdis:command(Context, [<<"HDEL">>, Bucket, Key]) of
         {ok, _Response} ->
             {ok, State};
         {error, Reason} ->
             {error, Reason, State}
-    end.
-
-%% @private
-delete_as_del(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
+    end;
+delete(kv, Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
     CombinedKey = [Bucket, <<",">>, Key],
     case hierdis:command(Context, [<<"DEL">>, CombinedKey]) of
         {ok, _Response} ->
@@ -236,17 +215,15 @@ delete_as_del(Bucket, Key, _IndexSpec, #state{redis_context=Context}=State) ->
 
 %% @doc Fold over all the buckets
 -spec fold_buckets(riak_kv_backend:fold_buckets_fun(), any(), [], state()) -> {ok, any()} | {async, fun()}.
-fold_buckets(FoldBucketsFun, Acc, Opts, #state{redis_context=Context}=State) ->
-    FoldFun = fold_buckets_fun(FoldBucketsFun),
+fold_buckets(FoldBucketsFun, Acc, Opts, #state{storage_scheme=Scheme,redis_context=Context}=State) ->
+    FoldFun = fold_buckets_fun(Scheme, FoldBucketsFun),
     BucketFolder =
         fun() ->
             case hierdis:command(Context, [<<"KEYS">>, <<"*">>]) of
-                {ok, _Response} ->
-                    {BucketList, _} = lists:foldl(FoldFun, {Acc, sets:new()}, _Response),
-                    io:format("BUCKETS: ~p\n", [BucketList]),
+                {ok, Response} ->
+                    {BucketList, _} = lists:foldl(FoldFun, {Acc, sets:new()}, Response),
                     BucketList;
                 {error, Reason} -> 
-                    io:format("ERROR: ~p\n", [Reason]),
                     {error, Reason, State}
             end
         end,
@@ -258,28 +235,55 @@ fold_buckets(FoldBucketsFun, Acc, Opts, #state{redis_context=Context}=State) ->
     end.
 
 %% @private
-fold_buckets_fun(FoldBucketsFun) ->
+fold_buckets_fun(hash, FoldBucketsFun) ->
+    fun(B, {Acc, _}) ->
+        {FoldBucketsFun(B, Acc), undefined}
+    end;
+fold_buckets_fun(kv, FoldBucketsFun) ->
     fun(CombinedKey, {Acc, BucketSet}) ->
-            [Bucket, _Key] = binary:split(CombinedKey, <<",">>),
-            case sets:is_element(Bucket, BucketSet) of
-                true ->
-                    {Acc, BucketSet};
-                false ->
-                    {FoldBucketsFun(Bucket, Acc),
-                     sets:add_element(Bucket, BucketSet)}
-            end
+        [B, _Key] = binary:split(CombinedKey, <<",">>),
+        case sets:is_element(B, BucketSet) of
+            true ->
+                {Acc, BucketSet};
+            false ->
+                {FoldBucketsFun(B, Acc),
+                 sets:add_element(B, BucketSet)}
+        end
     end.
 
 %% @doc Fold over all the keys for one or all buckets.
 -spec fold_keys(riak_kv_backend:fold_keys_fun(), any(), [{atom(), term()}], state()) -> {ok, term()} | {async, fun()}.
-fold_keys(FoldKeysFun, Acc, Opts, #state{redis_context=Context}=State) ->
+fold_keys(FoldKeysFun, Acc, Opts, #state{storage_scheme=Scheme}=State) ->
+    fold_keys(Scheme, FoldKeysFun, Acc, Opts, State).
+
+%% @private
+fold_keys(hash, FoldKeysFun, Acc, Opts, #state{redis_context=Context}=State) ->
     Bucket =  proplists:get_value(bucket, Opts),
-    FoldFun = fold_keys_fun(FoldKeysFun, Bucket),
+    FoldFun = fold_keys_fun(hash, FoldKeysFun, Bucket),
+    KeyFolder =
+        fun() ->
+            case hierdis:command(Context, [<<"HKEYS">>, Bucket]) of
+                {ok, Response} ->
+                    KeyList = lists:foldl(FoldFun, Acc, Response),
+                    KeyList;
+                {error, Reason} -> 
+                    {error, Reason, State}
+            end
+        end,
+    case lists:member(async_fold, Opts) of
+        true ->
+            {async, KeyFolder};
+        false ->
+            {ok, KeyFolder()}
+    end;
+fold_keys(kv, FoldKeysFun, Acc, Opts, #state{redis_context=Context}=State) ->
+    Bucket =  proplists:get_value(bucket, Opts),
+    FoldFun = fold_keys_fun(kv, FoldKeysFun, Bucket),
     KeyFolder =
         fun() ->
             case hierdis:command(Context, [<<"KEYS">>, [Bucket,",*"]]) of
-                {ok, _Response} ->
-                    KeyList = lists:foldl(FoldFun, Acc, _Response),
+                {ok, Response} ->
+                    KeyList = lists:foldl(FoldFun, Acc, Response),
                     KeyList;
                 {error, Reason} -> 
                     {error, Reason, State}
@@ -293,59 +297,85 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{redis_context=Context}=State) ->
     end.
 
 %% @private
-fold_keys_fun(FoldKeysFun, undefined) ->
+fold_keys_fun(hash, FoldKeysFun, Bucket) ->
+    fun(Key, Acc) ->
+        FoldKeysFun(Bucket, Key, Acc)
+    end;
+fold_keys_fun(kv, FoldKeysFun, _Bucket) ->
     fun(CombinedKey, Acc) ->
         [B, Key] = binary:split(CombinedKey, <<",">>),
         FoldKeysFun(B, Key, Acc)
-    end;
-fold_keys_fun(FoldKeysFun, Bucket) ->
-    fun(CombinedKey, Acc) ->
-        [B, Key] = binary:split(CombinedKey, <<",">>),
-        case B =:= Bucket of
-            true ->
-                FoldKeysFun(Bucket, Key, Acc);
-            false ->
-                Acc
-        end
     end.
 
 %% @doc Fold over all the objects for one or all buckets.
 -spec fold_objects(riak_kv_backend:fold_objects_fun(), any(), [{atom(), term()}], state()) -> {ok, any()} | {async, fun()}.
-fold_objects(FoldObjectsFun, Acc, Opts, #state{redis_context=Context}=State) ->
-    {ok, State}.
-    % Bucket =  proplists:get_value(bucket, Opts),
-    % FoldFun = fold_objects_fun(FoldObjectsFun, Bucket),
-    % ObjectFolder =
-    %     fun() ->
-    %         case hierdis:command(Context, [<<"KEYS">>, [Bucket,",*"]]) of
-    %             {ok, _Response} ->
-    %                 case hierdis:command(Context, [<<"MGET">>, _Response]) of
-    %                     {ok, _Response2} ->
-    %                         ObjectList = lists:foldl(FoldFun, Acc, _Response2),
-    %                         ObjectList;
-    %                     {error, Reason} -> 
-    %                         {error, Reason, State}
-    %                 end;
-    %             {error, Reason} -> 
-    %                 {error, Reason, State}
-    %         end
-    %     end,
-    % case lists:member(async_fold, Opts) of
-    %     true ->
-    %         {async, ObjectFolder};
-    %     false ->
-    %         {ok, ObjectFolder()}
-    % end.
+fold_objects(FoldObjectsFun, Acc, Opts, #state{storage_scheme=Scheme}=State) ->
+    fold_objects(Scheme, FoldObjectsFun, Acc, Opts, State).
+ 
+%% @private
+fold_objects(hash, FoldObjectsFun, Acc, Opts, #state{redis_context=Context}=State) ->   
+    Bucket =  proplists:get_value(bucket, Opts),
+    FoldFun = fold_objects_fun(hash, FoldObjectsFun, Bucket, Context),
+    ObjectFolder =
+        fun() ->
+            case hierdis:command(Context, [<<"HKEYS">>, Bucket]) of
+                {ok, Response} ->
+                    ObjectList = lists:foldl(FoldFun, Acc, Response),
+                    ObjectList;
+                {error, Reason} -> 
+                    {error, Reason, State}
+            end
+        end,
+    case lists:member(async_fold, Opts) of
+        true ->
+            {async, ObjectFolder};
+        false ->
+            {ok, ObjectFolder()}
+    end;
+fold_objects(kv, FoldObjectsFun, Acc, Opts, #state{redis_context=Context}=State) ->   
+    Bucket =  proplists:get_value(bucket, Opts),
+    FoldFun = fold_objects_fun(kv, FoldObjectsFun, Bucket, Context),
+    ObjectFolder =
+        fun() ->
+            case hierdis:command(Context, [<<"KEYS">>, [Bucket,",*"]]) of
+                {ok, Response} ->
+                    ObjectList = lists:foldl(FoldFun, Acc, Response),
+                    ObjectList;
+                {error, Reason} -> 
+                    {error, Reason, State}
+            end
+        end,
+    case lists:member(async_fold, Opts) of
+        true ->
+            {async, ObjectFolder};
+        false ->
+            {ok, ObjectFolder()}
+    end.
 
 %% @private
-% fold_objects_fun(FoldObjectsFun, undefined) ->
-%     fun(Bucket, Key, Value, Acc) ->
-%         FoldObjectsFun(undefined, undefined, Value, Acc)
-%     end;
-% fold_objects_fun(FoldObjectsFun, Bucket) ->
-%     fun(Bucket, Key, Value, Acc) ->
-%         FoldObjectsFun(Bucket, Key, Value, Acc)
-%     end.
+fold_objects_fun(hash, FoldObjectsFun, Bucket, RedisContext) ->
+    fun(Key, Acc) ->
+        case hierdis:command(RedisContext, [<<"HGET">>, Bucket, Key]) of
+            {ok, undefined}  ->
+                Acc;
+            {ok, Value} ->
+                FoldObjectsFun(Bucket, Key, Value, Acc);
+            {error, _Reason} ->
+                Acc
+        end
+    end;
+fold_objects_fun(kv, FoldObjectsFun, _Bucket, RedisContext) ->
+    fun(CombinedKey, Acc) ->
+        case hierdis:command(RedisContext, [<<"GET">>, CombinedKey]) of
+            {ok, undefined}  ->
+                Acc;
+            {ok, Value} ->
+                [B, Key] = binary:split(CombinedKey, <<",">>),
+                FoldObjectsFun(B, Key, Value, Acc);
+            {error, _Reason} ->
+                Acc
+        end
+    end.
 
 %% @doc Delete all objects from this backend
 -spec drop(state()) -> {ok, state()} | {error, term(), state()}.
