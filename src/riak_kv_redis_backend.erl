@@ -43,8 +43,10 @@
          status/1,
          callback/3]).
 
+-export([data_size/1]).
+
 -define(API_VERSION, 1).
--define(CAPABILITIES, [async_fold]).
+-define(CAPABILITIES, [async_fold, size]).
 
 -record(state, {redis_context :: term(),
                 redis_socket_path :: string(),
@@ -140,7 +142,6 @@ stop(#state{redis_context=Context}=State) ->
                     {error, Reason, State}
             end
     end.
-
 
 %% @doc Retrieve an object from the backend
 -spec get(riak_object:bucket(), riak_object:key(), state()) -> {ok, any(), state()} | {ok, not_found, state()} | {error, term(), state()}.
@@ -385,6 +386,18 @@ drop(#state{redis_context=Context}=State) ->
             {ok, State};
         {error, Reason} ->
             {error, Reason, State}
+    end.
+
+%% @doc Get the size of the redis database in bytes
+-spec data_size(state()) -> undefined | {non_neg_integer(), bytes}.
+data_size(#state{redis_context=Context}=_State) ->
+    case hierdis:command(Context, [<<"INFO">>, <<"memory">>]) of
+        {ok, _Response} ->
+            [_JunkHeader | [UsedMemoryElm | _Rest]] = binary:split(_Response, <<"\r\n">>, [global, trim]),
+            [_Name | Value] = binary:split(UsedMemoryElm, <<":">>, [global, trim]),
+            list_to_integer(binary_to_list(list_to_binary(Value)));
+        _ ->
+            undefined
     end.
 
 %% @doc Returns true if this backend contains any keys otherwise returns false.
